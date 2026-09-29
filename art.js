@@ -272,19 +272,59 @@ const EmojiArt = (() => {
   //
   // Emojis are wider than any invisible character: 1.245em with Android's emoji font and
   // 1.37em on Windows, while the ideographic space (U+3000) is exactly 1em. Pasted as plain
-  // text, a row with gaps therefore drifts left. Each spacing option below pads U+3000 with a
-  // fixed-width Unicode space to match a given emoji width.
-  const SPACINGS = [
-    { id: "A", width: 1.0, chars: "　" },
-    { id: "B", width: 1.167, chars: "　 " },
-    { id: "C", width: 1.2, chars: "　 " },
-    { id: "D", width: 1.25, chars: "　 " },
-    { id: "E", width: 1.333, chars: "　 " },
-    { id: "F", width: 1.375, chars: "　  " }, // hair space is 1/8em on Windows (emoji 1.373em)
-    { id: "G", width: 1.417, chars: "　  " },
-    { id: "H", width: 1.5, chars: "　 " },
+  // text, a row with gaps therefore drifts left. A blank is U+3000 padded with a fixed-width
+  // Unicode space, which gives only these exact widths:
+  const BLANKS = [
+    { width: 1, chars: "\u3000" },
+    { width: 7 / 6, chars: "\u3000\u2006" }, // + six-per-em space
+    { width: 1.25, chars: "\u3000\u2005" }, // + four-per-em space
+    { width: 4 / 3, chars: "\u3000\u2004" }, // + three-per-em space
+    { width: 1.5, chars: "\u3000\u2002" }, // + en space
   ];
-  const DEFAULT_SPACING = "D"; // matches Android's emoji width (1.245em)
+
+  // Emoji widths in between (WhatsApp's own emojis, for one) are matched by mixing the two
+  // nearest blanks along the row, so the n-th blank of every row ends within ~0.04em of
+  // n × width and gaps never add up to a visible drift.
+  const MIN_SPACING = 1;
+  const MAX_SPACING = 1.5;
+  const SPACING_STEP = 0.025;
+  // Steps offered by the fine-tune test, labelled "1".."21".
+  const SPACINGS = Array.from({ length: Math.round((MAX_SPACING - MIN_SPACING) / SPACING_STEP) + 1 }, (_, i) => ({
+    id: String(i + 1),
+    width: Math.round((MIN_SPACING + i * SPACING_STEP) * 1000) / 1000,
+  }));
+  const DEFAULT_SPACING = 1.25; // matches Android's emoji width (1.245em)
+
+  // Letters from the earlier 8-step test, so spacing saved on a device keeps working.
+  const LEGACY_SPACINGS = { A: 1, B: 1.167, C: 1.2, D: 1.25, E: 1.333, F: 1.375, G: 1.417, H: 1.5 };
+
+  function spacingStep(width) {
+    const i = Math.round((Math.min(MAX_SPACING, Math.max(MIN_SPACING, width)) - MIN_SPACING) / SPACING_STEP);
+    return SPACINGS[i];
+  }
+
+  // A width (number) or legacy letter -> the nearest step's width; null if not a spacing.
+  function normalizeSpacing(value) {
+    const w = typeof value === "string" && Object.hasOwn(LEGACY_SPACINGS, value) ? LEGACY_SPACINGS[value] : value;
+    if (typeof w !== "number" || !Number.isFinite(w)) return null;
+    return spacingStep(w).width;
+  }
+
+  // Returns a function giving the characters for the next blank of one row.
+  function blankFiller(width) {
+    const w = normalizeSpacing(width) ?? DEFAULT_SPACING;
+    const hi = BLANKS.find((b) => b.width >= w - 1e-9);
+    const lo = [...BLANKS].reverse().find((b) => b.width <= w + 1e-9);
+    let used = 0;
+    let count = 0;
+    return () => {
+      count++;
+      const target = count * w;
+      const b = Math.abs(used + hi.width - target) < Math.abs(used + lo.width - target) ? hi : lo;
+      used += b.width;
+      return b.chars;
+    };
+  }
 
   // Braille blank: invisible but not whitespace, so apps can't trim it. Starting every
   // line with it stops WhatsApp/Instagram/Facebook from eating leading gaps or empty lines.
@@ -300,12 +340,8 @@ const EmojiArt = (() => {
 
   const SQUARES = { white: "⬜️", black: "⬛️" };
 
-  function spacingChars(id) {
-    return (SPACINGS.find((s) => s.id === id) || SPACINGS.find((s) => s.id === DEFAULT_SPACING)).chars;
-  }
-
   // options: platform (key of PLATFORMS), background ("invisible" | "white" | "black" | "custom"),
-  // customBlank (emoji string), spacing (SPACINGS id)
+  // customBlank (emoji string), spacing (emoji width in em, see SPACINGS)
   function formatForPlatform(grid, options = {}) {
     const platform = PLATFORMS[options.platform] || PLATFORMS.other;
     const background = options.background || "invisible";
@@ -320,10 +356,18 @@ const EmojiArt = (() => {
     }
 
     const guard = platform.guard ? LINE_GUARD : "";
-    const blank = spacingChars(options.spacing);
     return trimGrid(grid)
-      .map((row) => guard + row.map((cell) => cell || blank).join(""))
+      .map((row) => {
+        const blank = blankFiller(options.spacing);
+        return guard + row.map((cell) => cell || blank()).join("");
+      })
       .join("\n");
+  }
+
+  // Eight blanks at the given spacing, as used by the fine-tune test.
+  function testGap(width) {
+    const blank = blankFiller(width);
+    return Array.from({ length: 8 }, blank).join("");
   }
 
   // A test message: the 🟥 on the line whose spacing matches the device's emoji width sits
@@ -331,7 +375,7 @@ const EmojiArt = (() => {
   function calibrationText(platform) {
     const guard = (PLATFORMS[platform] || PLATFORMS.other).guard ? LINE_GUARD : "";
     const lines = [guard + "🟥".repeat(9)];
-    for (const s of SPACINGS) lines.push(guard + s.chars.repeat(8) + "🟥 " + s.id);
+    for (const s of SPACINGS) lines.push(guard + testGap(s.width) + "🟥 " + s.id);
     return lines.join("\n");
   }
 
@@ -385,8 +429,13 @@ const EmojiArt = (() => {
     trimGrid,
     gridToText,
     gridStats,
+    BLANKS,
     SPACINGS,
     DEFAULT_SPACING,
+    normalizeSpacing,
+    spacingStep,
+    blankFiller,
+    testGap,
     LINE_GUARD,
     PLATFORMS,
     formatForPlatform,

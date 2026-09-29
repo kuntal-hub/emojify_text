@@ -380,26 +380,76 @@ test("platform copy: empty rows between lines keep the guard (Instagram deletes 
   for (const line of lines.slice(14, 18)) assert.equal(line, G);
 });
 
-test("platform copy: blanks use the chosen spacing and keep every row's cell count", () => {
+// Width in em of an invisible gap, per the Unicode definitions of its spaces.
+const SPACE_EM = { 0x3000: 1, 0x2002: 1 / 2, 0x2004: 1 / 3, 0x2005: 1 / 4, 0x2006: 1 / 6 };
+const gapWidth = (str) => [...str].reduce((sum, c) => sum + SPACE_EM[c.codePointAt(0)], 0);
+
+test("platform copy: widths that match one blank use it throughout; default is 1.25em", () => {
   const grid = A.trimGrid(A.buildGrid("I", { emojis: ["😘"] }));
-  for (const s of A.SPACINGS) {
-    const lines = A.formatForPlatform(grid, { platform: "whatsapp", spacing: s.id }).split("\n");
-    assert.equal(lines[5], G + s.chars.repeat(4) + "😘😘", `spacing ${s.id}`);
+  for (const width of [1, 1.25, 1.5]) {
+    const chars = A.BLANKS.find((b) => b.width === width).chars;
+    const lines = A.formatForPlatform(grid, { platform: "whatsapp", spacing: width }).split("\n");
+    assert.equal(lines[5], G + chars.repeat(4) + "😘😘", `spacing ${width}`);
   }
-  // default spacing is D (U+3000 + four-per-em space = 1.25em, Android's emoji width)
+  // default: U+3000 + four-per-em space = 1.25em, Android's emoji width
   const def = A.formatForPlatform(grid, { platform: "whatsapp" }).split("\n")[5];
-  assert.equal(def, G + "　 ".repeat(4) + "😘😘");
-  // unknown spacing ids fall back to the default
-  assert.equal(A.formatForPlatform(grid, { platform: "whatsapp", spacing: "Z" }).split("\n")[5], def);
+  assert.equal(def, G + "\u3000\u2005".repeat(4) + "😘😘");
+  for (const bad of ["Z", "", "1.3", null, NaN, {}]) {
+    assert.equal(A.formatForPlatform(grid, { platform: "whatsapp", spacing: bad }).split("\n")[5], def, `spacing ${bad}`);
+  }
 });
 
-test("spacing options get wider in order and D matches Android's emoji width", () => {
-  const widths = A.SPACINGS.map((s) => s.width);
-  assert.deepEqual([...widths].sort((a, b) => a - b), widths);
-  assert.equal(new Set(A.SPACINGS.map((s) => s.id)).size, A.SPACINGS.length);
-  const d = A.SPACINGS.find((s) => s.id === A.DEFAULT_SPACING);
-  assert.ok(Math.abs(d.width - 1.245) < 0.01);
-  for (const s of A.SPACINGS) assert.match(s.chars, /^[　 - ]+$/u, "only real, fixed-width spaces");
+test("in-between spacings mix blanks so long gaps don't drift", () => {
+  for (const { width } of A.SPACINGS) {
+    const next = A.blankFiller(width);
+    let used = 0;
+    for (let n = 1; n <= 40; n++) {
+      const chars = next();
+      assert.ok(A.BLANKS.some((b) => b.chars === chars), `${width}: unknown blank`);
+      used += gapWidth(chars);
+      assert.ok(Math.abs(used - n * width) <= 1 / 12 + 1e-9, `${width}: blank ${n} ends at ${used}, want ${n * width}`);
+    }
+  }
+  // WhatsApp-sized emojis (~1.3em): a 12-blank gap used to end 0.6em short at 1.25em
+  const next = A.blankFiller(1.3);
+  const gap = Array.from({ length: 12 }, next).join("");
+  assert.ok(Math.abs(gapWidth(gap) - 12 * 1.3) < 0.05);
+  assert.ok(gap.includes("\u2005") && gap.includes("\u2004"), "mixes the two nearest blanks");
+});
+
+test("platform copy: the n-th blank is the same in every row, so rows line up", () => {
+  const grid = [[null, "😘"], [null, null, null, "😘"], ["😘", null, "😘"]];
+  const lines = A.formatForPlatform(grid, { platform: "whatsapp", spacing: 1.3 }).split("\n");
+  const next = A.blankFiller(1.3);
+  const [b1, b2, b3] = [next(), next(), next()];
+  assert.equal(lines[0], G + b1 + "😘");
+  assert.equal(lines[1], G + b1 + b2 + b3 + "😘");
+  assert.equal(lines[2], G + "😘" + b1 + "😘");
+});
+
+test("spacing steps run 1-1.5em in 0.025 steps; default matches Android's emoji width", () => {
+  assert.equal(A.SPACINGS.length, 21);
+  A.SPACINGS.forEach((s, i) => {
+    assert.equal(s.id, String(i + 1));
+    assert.ok(Math.abs(s.width - (1 + i * 0.025)) < 1e-9);
+  });
+  assert.ok(A.SPACINGS.some((s) => s.width === A.DEFAULT_SPACING));
+  assert.ok(Math.abs(A.DEFAULT_SPACING - 1.245) < 0.01);
+  for (const b of A.BLANKS) assert.match(b.chars, /^\u3000[\u2002-\u2006]?$/u, "only real, fixed-width spaces");
+});
+
+test("normalizeSpacing snaps to a step and migrates the old A-H letters", () => {
+  assert.equal(A.normalizeSpacing(1.29), 1.3);
+  assert.equal(A.normalizeSpacing(9), 1.5);
+  assert.equal(A.normalizeSpacing(0), 1);
+  assert.equal(A.normalizeSpacing("A"), 1);
+  assert.equal(A.normalizeSpacing("D"), 1.25);
+  assert.equal(A.normalizeSpacing("E"), 1.325);
+  assert.equal(A.normalizeSpacing("H"), 1.5);
+  for (const bad of ["Z", "21", "__proto__", "toString", null, undefined, NaN, Infinity]) {
+    assert.equal(A.normalizeSpacing(bad), null, `input ${String(bad)}`);
+  }
+  assert.equal(A.spacingStep(1.3).id, "13");
 });
 
 test("platform copy with visible backgrounds pads a rectangle and needs no guard", () => {
@@ -419,11 +469,19 @@ test("'other' platform has no guard", () => {
   assert.equal(lines[0], "😘".repeat(10));
 });
 
-test("calibration text: one reference row plus one line per spacing option", () => {
+test("calibration text: one reference row plus one line per spacing step", () => {
   const lines = A.calibrationText("whatsapp").split("\n");
   assert.equal(lines.length, 1 + A.SPACINGS.length);
   assert.equal(lines[0], G + "🟥".repeat(9));
-  A.SPACINGS.forEach((s, i) => assert.equal(lines[i + 1], G + s.chars.repeat(8) + "🟥 " + s.id));
+  let prev = 0;
+  A.SPACINGS.forEach((s, i) => {
+    const gap = A.testGap(s.width);
+    assert.equal(lines[i + 1], G + gap + "🟥 " + s.id);
+    const w = gapWidth(gap);
+    assert.ok(Math.abs(w - 8 * s.width) <= 1 / 12 + 1e-9, `line ${s.id} gap is ${w}em`);
+    assert.ok(w > prev, `line ${s.id} must sit further right than the line above`);
+    prev = w;
+  });
 });
 
 test("platform width limits: stacked depth 2 fits WhatsApp, side-by-side words don't", () => {

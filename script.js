@@ -44,7 +44,7 @@
     platform: "whatsapp",
     background: "invisible",
     customBlank: "🤍",
-    spacing: {}, // platform -> SPACINGS id picked with the fine-tune test
+    spacing: {}, // platform -> emoji width (em) picked with the fine-tune test
     zoom: 18,
     fit: true,
     custom: {}, // key -> { emojis: "🔥🌟", depth: 1-3 | null }
@@ -131,10 +131,9 @@
     else if (BACKGROUNDS.includes(saved.blank)) s.background = saved.blank; // settings from v2
     if (typeof saved.customBlank === "string") s.customBlank = saved.customBlank.slice(0, 16);
     if (saved.spacing && typeof saved.spacing === "object") {
-      for (const [platform, id] of Object.entries(saved.spacing)) {
-        if (has(EmojiArt.PLATFORMS, platform) && EmojiArt.SPACINGS.some((sp) => sp.id === id)) {
-          s.spacing[platform] = id;
-        }
+      for (const [platform, value] of Object.entries(saved.spacing)) {
+        const width = EmojiArt.normalizeSpacing(value); // also migrates the old A-H letters
+        if (has(EmojiArt.PLATFORMS, platform) && width !== null) s.spacing[platform] = width;
       }
     }
     if (Number.isFinite(saved.zoom)) s.zoom = Math.min(40, Math.max(4, saved.zoom));
@@ -217,14 +216,14 @@
         probe.textContent = s.repeat(10);
         return probe.getBoundingClientRect().width;
       };
-      const target = measure("😀");
+      const target = measure("😀".repeat(8));
       let best = EmojiArt.DEFAULT_SPACING;
       let bestDiff = Infinity;
       for (const s of EmojiArt.SPACINGS) {
-        const diff = Math.abs(measure(s.chars) - target);
+        const diff = Math.abs(measure(EmojiArt.testGap(s.width)) - target);
         if (diff < bestDiff) {
           bestDiff = diff;
-          best = s.id;
+          best = s.width;
         }
       }
       probe.remove();
@@ -238,6 +237,11 @@
 
   function currentSpacing() {
     return state.spacing[state.platform] || detectedSpacing;
+  }
+
+  // The fine-tune test's line number for the current spacing.
+  function currentSpacingLabel() {
+    return EmojiArt.spacingStep(currentSpacing()).id;
   }
 
   function platformName() {
@@ -311,7 +315,7 @@
       els.spacing.appendChild(btn);
     }
     setupSegmented(els.spacing, (id) => {
-      state.spacing[state.platform] = id;
+      state.spacing[state.platform] = EmojiArt.SPACINGS.find((s) => s.id === id).width;
       update();
       showToast(`Saved spacing ${id} for ${platformName()} 👍`);
     });
@@ -484,11 +488,11 @@
       : "Every cell is an emoji, so it lines up exactly the same on every phone and app.";
     els.tune.hidden = !invisible;
 
-    syncSegmented(els.spacing, currentSpacing());
+    syncSegmented(els.spacing, currentSpacingLabel());
     const saved = !!state.spacing[state.platform];
     els.spacingStatus.textContent = saved
-      ? `Using spacing ${currentSpacing()} for ${isOther ? "other apps" : name} (from your test, saved on this device).`
-      : `Using spacing ${currentSpacing()}, auto-detected for this device's emoji size.`;
+      ? `Using spacing ${currentSpacingLabel()} for ${isOther ? "other apps" : name} (from your test, saved on this device).`
+      : `Using spacing ${currentSpacingLabel()}, auto-detected for this device's emoji size.`;
     els.spacingReset.hidden = !saved;
 
     els.mobileStatus.textContent = !grid.length

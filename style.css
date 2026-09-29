@@ -619,9 +619,17 @@ button {
   margin-top: 8px;
 }
 
+/* 21 fine steps: three even rows of 7 */
+.segmented.spacing {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  max-width: 340px;
+}
+
 .segmented.spacing button {
-  min-width: 40px;
+  padding-inline: 4px;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 .actions {
